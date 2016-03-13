@@ -4,21 +4,67 @@
 #include "stdafx.h"
 #pragma warning (disable : 4996)
 
+using namespace std;
+
 int main()
 {
-	OSVERSIONINFO osvi;
-	BOOL bIsWindowsXPorLater;
+	OSVERSIONINFOEX osvi;
 
-	ZeroMemory(&osvi, sizeof(OSVERSIONINFO));
-	osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);
+	ZeroMemory(&osvi, sizeof(OSVERSIONINFOEX));
+	osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEX);
 
-	GetVersionEx(&osvi);
+	GetVersionEx((OSVERSIONINFO*) &osvi);
 
-	bIsWindowsXPorLater =
-		((osvi.dwMajorVersion > 5) ||
-			((osvi.dwMajorVersion == 5) && (osvi.dwMinorVersion >= 1)));
+	string osName = "";
 
-	if (bIsWindowsXPorLater)
-		printf("The system meets the requirements.\n");
-	else printf("The system does not meet the requirements.\n");
+	switch (osvi.dwMajorVersion)
+	{
+	case 10:
+		osName = (osvi.wProductType == VER_NT_WORKSTATION) ? "Windows 10" : "Windows Server 2016 Technical Preview";
+		break;
+
+	case 6:
+
+		switch (osvi.dwMinorVersion)
+		{
+		case 3:
+			osName = (osvi.wProductType == VER_NT_WORKSTATION) ? "Windows 8.1" : "Windows Server 2012 R2";
+			break;
+		case 2:
+			osName = (osvi.wProductType == VER_NT_WORKSTATION) ? "Windows 8" : "Windows Server 2012";
+			break;
+		case 1:
+			osName = (osvi.wProductType == VER_NT_WORKSTATION) ? "Windows 7" : "Windows Server 2008 R2";
+			break;
+		case 0:
+			osName = (osvi.wProductType == VER_NT_WORKSTATION) ? "Windows Vista" : "Windows Server 2008";
+			break;
+		}
+		break;
+
+	case 5:
+
+		switch (osvi.dwMinorVersion)
+		{
+		case 2:
+			osName = (GetSystemMetrics(SM_SERVERR2) == 0) ? "Windows Server 2003" : "Windows Server 2003 R2";
+			break;
+		case 1:
+			osName = "Windows XP";
+			break;
+		case 0:
+			osName = "Windows 2000";
+			break;
+		}
+		break;
+	}
+
+	if (osName != "")
+	{
+		cout << osName << " " << osvi.szCSDVersion << endl;
+	}
+	else
+	{
+		cout << "Unknown OS." << endl;
+	}
 }
