@@ -8,11 +8,12 @@
 #include "targetver.h"
 
 #include <stdio.h>
-#include <windows.h>
-#include <tlhelp32.h>
 #include <tchar.h>
-#include <sstream>
-#include <psapi.h>
+#include <vector>
+#include <queue>
+#include <set>
+#include <string>
+#include <iostream>
 
 
 // TODO: reference additional headers your program requires here

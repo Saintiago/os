@@ -1,12 +1,9 @@
-// process.cpp : Defines the entry point for the console application.
-//
-
 #include "stdafx.h"
 
-//  Forward declarations:
 void PrintProcessList();
 bool PrintProcessInfo(DWORD pid);
-BOOL ListProcessModules(DWORD dwPID);
+int ListProcessModules(DWORD dwPID);
+void PrintProcessNameAndID(DWORD processID);
 
 using namespace std;
 
@@ -21,10 +18,10 @@ int main(int argc, char* argv[])
 		DWORD processId;
 		istringstream ss(argv[1]);
 		if (!(ss >> processId))
-			cerr << "Invalid number " << argv[1] << '\n';
+			_tprintf(TEXT("Invalid number %hs \n"), argv[1]);
 		if (!PrintProcessInfo(processId))
 		{
-			cout << "Process #" << processId << " not found" << endl;
+			_tprintf(TEXT("\n  Process #0x%08X not found\n"), processId);
 		}
 	}
 
@@ -33,23 +30,25 @@ int main(int argc, char* argv[])
 
 void PrintProcessList()
 {
-	HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-	
-	if (hSnapshot) 
+	DWORD aProcesses[1024], cbNeeded, cProcesses;
+	unsigned int i;
+
+	if (!EnumProcesses(aProcesses, sizeof(aProcesses), &cbNeeded))
 	{
-		PROCESSENTRY32 pe32;
-		pe32.dwSize = sizeof(PROCESSENTRY32);
-		if (Process32First(hSnapshot, &pe32)) 
+		return;
+	}
+
+	cProcesses = cbNeeded / sizeof(DWORD);
+
+	for (i = 0; i < cProcesses; i++)
+	{
+		if (aProcesses[i] != 0)
 		{
-			do 
-			{
-				cout << pe32.th32ProcessID << ": " << pe32.szExeFile << endl;
-			} 
-			while (Process32Next(hSnapshot, &pe32));
+			PrintProcessNameAndID(aProcesses[i]);
 		}
-		CloseHandle(hSnapshot);
 	}
 }
+
 
 bool PrintProcessInfo(DWORD pid)
 {
@@ -66,11 +65,12 @@ bool PrintProcessInfo(DWORD pid)
 			{
 				if (pe32.th32ProcessID == pid)
 				{
-					cout << "Process name " << pe32.szExeFile << endl;
-					cout << "Process ID " << pe32.th32ProcessID << endl;
-					cout << "Thread count " << pe32.cntThreads << endl;
-					cout << "Parent process " << pe32.th32ParentProcessID << endl;
-					cout << "Priority base " << pe32.pcPriClassBase << endl;
+					_tprintf(TEXT("\n  Process name:  %s"), pe32.szExeFile);
+					_tprintf(TEXT("\n  Process ID        = 0x%08X"), pe32.th32ProcessID);
+					_tprintf(TEXT("\n  Thread count      = %d"), pe32.cntThreads);
+					_tprintf(TEXT("\n  Parent process ID = 0x%08X"), pe32.th32ParentProcessID);
+					_tprintf(TEXT("\n  Priority base     = %d"), pe32.pcPriClassBase);
+					_tprintf(TEXT("\n  Modules:\n"));
 					ListProcessModules(pe32.th32ProcessID);
 					found = true;
 				}
@@ -82,43 +82,62 @@ bool PrintProcessInfo(DWORD pid)
 	return found;
 }
 
-BOOL ListProcessModules(DWORD dwPID)
+int ListProcessModules(DWORD processID)
 {
-	HANDLE hModuleSnap = INVALID_HANDLE_VALUE;
-	MODULEENTRY32 me32;
+	HMODULE hMods[1024];
+	HANDLE hProcess;
+	DWORD cbNeeded;
+	unsigned int i;
 
-	// Take a snapshot of all modules in the specified process.
-	hModuleSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, dwPID);
-	if (hModuleSnap == INVALID_HANDLE_VALUE)
+	printf("\nProcess ID: %u\n", processID);
+
+	hProcess = OpenProcess(PROCESS_QUERY_INFORMATION |
+		PROCESS_VM_READ,
+		FALSE, processID);
+	if (NULL == hProcess)
+		return 1;
+
+	if (EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded))
 	{
-		return(FALSE);
+		for (i = 0; i < (cbNeeded / sizeof(HMODULE)); i++)
+		{
+			TCHAR szModName[MAX_PATH];
+
+			if (GetModuleFileNameEx(hProcess, hMods[i], szModName,
+				sizeof(szModName) / sizeof(TCHAR)))
+			{
+				_tprintf(TEXT("\t%s (0x%08X)\n"), szModName, hMods[i]);
+			}
+		}
 	}
 
-	// Set the size of the structure before using it.
-	me32.dwSize = sizeof(MODULEENTRY32);
+	CloseHandle(hProcess);
 
-	// Retrieve information about the first module,
-	// and exit if unsuccessful
-	if (!Module32First(hModuleSnap, &me32))
+	return 0;
+}
+
+void PrintProcessNameAndID(DWORD processID)
+{
+	TCHAR szProcessName[MAX_PATH] = TEXT("<unknown>");
+
+	HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION |
+		PROCESS_VM_READ,
+		FALSE, processID);
+
+	if (NULL != hProcess)
 	{
-		CloseHandle(hModuleSnap);           // clean the snapshot object
-		return(FALSE);
+		HMODULE hMod;
+		DWORD cbNeeded;
+
+		if (EnumProcessModules(hProcess, &hMod, sizeof(hMod),
+			&cbNeeded))
+		{
+			GetModuleBaseName(hProcess, hMod, szProcessName,
+				sizeof(szProcessName) / sizeof(TCHAR));
+		}
 	}
 
-	// Now walk the module list of the process,
-	// and display information about each module
-	do
-	{
-		_tprintf(TEXT("\n\n     MODULE NAME:     %s"), me32.szModule);
-		_tprintf(TEXT("\n     Executable     = %s"), me32.szExePath);
-		_tprintf(TEXT("\n     Process ID     = 0x%08X"), me32.th32ProcessID);
-		_tprintf(TEXT("\n     Ref count (g)  = 0x%04X"), me32.GlblcntUsage);
-		_tprintf(TEXT("\n     Ref count (p)  = 0x%04X"), me32.ProccntUsage);
-		_tprintf(TEXT("\n     Base address   = 0x%08X"), (DWORD)me32.modBaseAddr);
-		_tprintf(TEXT("\n     Base size      = %d"), me32.modBaseSize);
+	_tprintf(TEXT("%s  (PID: %u)\n"), szProcessName, processID);
 
-	} while (Module32Next(hModuleSnap, &me32));
-
-	CloseHandle(hModuleSnap);
-	return(TRUE);
+	CloseHandle(hProcess);
 }
