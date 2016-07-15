@@ -13,6 +13,7 @@
 #include <strsafe.h>
 #include <string>
 #include <iostream>
+#include <exception>
 
 
 // TODO: reference additional headers your program requires here
