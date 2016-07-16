@@ -9,11 +9,14 @@
 
 #include <stdio.h>
 #include <tchar.h>
-#include <windows.h> 
-#include <strsafe.h>
+#include <windows.h>
+#include <map>
 #include <string>
 #include <iostream>
-#include <exception>
+#include <stdlib.h>  
+#include <time.h>    
+#include <strsafe.h>
+
 
 
 // TODO: reference additional headers your program requires here

@@ -7,55 +7,13 @@
 
 using namespace std;
 
-string GetClientMessage()
+struct ClientInfo
 {
-	string message;
-	std::getline(std::cin, message);
-	return message;
-}
+	HANDLE pipe;
+	int id;
+};
 
-bool WriteClientMessage(string message, HANDLE hPipe)
-{
-	BOOL   fSuccess = FALSE;
-	DWORD  cbToWrite, cbWritten;
-
-	std::wstring stemp = std::wstring(message.begin(), message.end());
-	LPCWSTR lpvMessage = stemp.c_str();
-
-	cbToWrite = (lstrlen(lpvMessage) + 1)*sizeof(TCHAR);
-
-	fSuccess = WriteFile(
-		hPipe,                  // pipe handle 
-		lpvMessage,             // message 
-		cbToWrite,              // message length 
-		&cbWritten,             // bytes written 
-		NULL);
-
-	return fSuccess;
-}
-
-void ReadClientMessage(HANDLE hPipe)
-{
-	TCHAR  chBuf[BUFSIZE];
-	BOOL   fSuccess = FALSE;
-	DWORD  cbRead;
-	do
-	{
-		// Read from the pipe. 
-
-		fSuccess = ReadFile(
-			hPipe,    // pipe handle 
-			chBuf,    // buffer to receive reply 
-			BUFSIZE*sizeof(TCHAR),  // size of buffer 
-			&cbRead,  // number of bytes read 
-			NULL);    // not overlapped 
-
-		if (!fSuccess && GetLastError() != ERROR_MORE_DATA)
-			break;
-
-		_tprintf(TEXT("\"%s\"\n"), chBuf);
-	} while (!fSuccess);  // repeat loop if ERROR_MORE_DATA 
-}
+map<HANDLE, ClientInfo> clientList;
 
 void ErrorExit(LPTSTR lpszFunction)
 {
@@ -90,103 +48,221 @@ void ErrorExit(LPTSTR lpszFunction)
 	ExitProcess(dw);
 }
 
-DWORD WINAPI ClientConnection(LPVOID lpvParam)
+DWORD WINAPI ServerThread(LPVOID hPipe)
 {
-	HANDLE hHeap = GetProcessHeap();
-	TCHAR* pchRequest = (TCHAR*)HeapAlloc(hHeap, 0, BUFSIZE*sizeof(TCHAR));
+	hPipe = (HANDLE)hPipe;
+	bool isNewClient = true;
+	TCHAR buffer[BUFSIZE];
 
-	DWORD cbBytesRead = 0, cbReplyBytes = 0, cbWritten = 0;
-	BOOL fSuccess = FALSE;
-	HANDLE hPipe = NULL;
-
-	if (lpvParam == NULL)
+	while (true)
 	{
-		printf("\nERROR - Pipe Server Failure:\n");
-		printf("   InstanceThread got an unexpected NULL value in lpvParam.\n");
-		printf("   InstanceThread exitting.\n");
-		if (pchRequest != NULL) HeapFree(hHeap, 0, pchRequest);
-		return (DWORD)-1;
+		DWORD bytesRead = 0;
+		if (!ReadFile(
+			hPipe,
+			buffer,
+			BUFSIZE*sizeof(TCHAR),
+			&bytesRead,
+			NULL
+			) || bytesRead == 0)
+		{
+			if (GetLastError() != ERROR_BROKEN_PIPE)
+			{
+				ErrorExit(TEXT("ReadFile"));
+			}
+			break;
+		}
+
+		if (isNewClient)
+		{
+			cout << "Client connected." << endl;
+			isNewClient = false;
+			clientList[hPipe].id = static_cast<int>(*buffer);
+		}
+		else
+		{
+			cout << buffer << endl;
+			for (auto pipe : clientList)
+			{
+				if (pipe.first != hPipe)
+				{
+					DWORD bytesWritten = 0;
+					if (!WriteFile(
+						pipe.second.pipe,
+						buffer,
+						BUFSIZE*sizeof(TCHAR) + 1,
+						&bytesWritten,
+						NULL
+						)
+						|| BUFSIZE*sizeof(TCHAR) + 1 != bytesWritten)
+					{
+						ErrorExit(TEXT("WriteFile"));
+					}
+				}
+			}
+		}
 	}
 
-	if (pchRequest == NULL)
+	cout << "Client disconnected." << endl;
+	DisconnectNamedPipe(clientList[hPipe].pipe);
+	CloseHandle(clientList[hPipe].pipe);
+	DisconnectNamedPipe(hPipe);
+	CloseHandle(hPipe);
+	clientList.erase(hPipe);
+
+	return 0;
+}
+
+void StartServer()
+{
+	LPTSTR pipeOutName = TEXT("\\\\.\\pipe\\chatOut");
+	LPTSTR pipeInName = TEXT("\\\\.\\pipe\\chatIn");
+
+	cout << "Server successfully started." << endl;
+	for (;;)
 	{
-		printf("\nERROR - Pipe Server Failure:\n");
-		printf("   InstanceThread got an unexpected NULL heap allocation.\n");
-		printf("   InstanceThread exitting.\n");
-		return (DWORD)-1;
+		HANDLE pipeIn = CreateNamedPipe(
+			pipeInName,
+			PIPE_ACCESS_INBOUND,
+			PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+			PIPE_UNLIMITED_INSTANCES,
+			BUFSIZE,
+			BUFSIZE,
+			0,
+			NULL
+			);
+
+		HANDLE pipeOut = CreateNamedPipe(
+			pipeOutName,
+			PIPE_ACCESS_OUTBOUND,
+			PIPE_TYPE_MESSAGE | PIPE_WAIT,
+			PIPE_UNLIMITED_INSTANCES,
+			BUFSIZE,
+			BUFSIZE,
+			0,
+			NULL
+			);
+
+		if (pipeIn == INVALID_HANDLE_VALUE || pipeOut == INVALID_HANDLE_VALUE)
+		{
+			ErrorExit(TEXT("CreateNamedPipe"));
+		}
+
+		BOOL pipeInReady = ConnectNamedPipe(pipeIn, NULL)
+			? true
+			: (GetLastError() == ERROR_PIPE_CONNECTED);
+		BOOL pipeOutReady = ConnectNamedPipe(pipeOut, NULL)
+			? true
+			: (GetLastError() == ERROR_PIPE_CONNECTED);
+
+		if (pipeInReady && pipeOutReady)
+		{
+			HANDLE hThread = CreateThread(NULL, 0, ServerThread, (LPVOID)pipeIn, 0, NULL);
+
+			if (hThread == NULL)
+			{
+				ErrorExit(TEXT("CreateThread"));
+				return;
+			}
+
+			CloseHandle(hThread);
+			ClientInfo dc;
+			dc.pipe = pipeOut;
+			clientList.insert({ pipeIn, dc });
+		}
+		else
+		{
+			ErrorExit(TEXT("ConnectNamedPipe"));
+			CloseHandle(pipeIn);
+			CloseHandle(pipeOut);
+		}
+	}
+}
+
+DWORD WINAPI ClientSpeaker(LPVOID hPipe)
+{
+	HANDLE pipeOut = (HANDLE)hPipe;
+	string message;
+
+	message = to_string(rand() % 10000 + 1);
+	DWORD bytesWritten = message.size() + 1;
+	DWORD bytesRead = 0;
+	if (!WriteFile(
+		pipeOut,
+		message.c_str(),
+		bytesWritten,
+		&bytesRead,
+		NULL
+		) || bytesRead != bytesWritten)
+	{
+		ErrorExit(TEXT("WriteFile"));
+		CloseHandle(pipeOut);
+		return 1;
 	}
 
-	// Print verbose messages. In production code, this should be for debugging only.
-	printf("InstanceThread created, receiving and processing messages.\n");
-
-	// The thread's parameter is a handle to a pipe object instance. 
-
-	hPipe = (HANDLE)lpvParam;
-
-	// Loop until done reading
-	while (1)
+	while (getline(std::cin, message))
 	{
-		// Read client requests from the pipe. This simplistic code only allows messages
-		// up to BUFSIZE characters in length.
-		fSuccess = ReadFile(
-			hPipe,        // handle to pipe 
-			pchRequest,    // buffer to receive data 
-			BUFSIZE*sizeof(TCHAR), // size of buffer 
-			&cbBytesRead, // number of bytes read 
-			NULL);        // not overlapped I/O 
+		DWORD bytesWritten = message.size() + 1;
+		DWORD bytesRead = 0;
+		if (!WriteFile(
+			pipeOut,
+			message.c_str(),
+			bytesWritten,
+			&bytesRead,
+			NULL
+			) || bytesRead != bytesWritten)
+		{
+			ErrorExit(TEXT("WriteFile"));
+			break;
+		}
+	}
 
-		if (!fSuccess || cbBytesRead == 0)
+	CloseHandle(pipeOut);
+
+	return 0;
+}
+
+DWORD WINAPI ClientListener(LPVOID hPipe)
+{
+	HANDLE pipeIn = (HANDLE)hPipe;
+	TCHAR buffer[BUFSIZE];
+
+	for (;;)
+	{
+		DWORD bytesRead = 0;
+		if (!ReadFile(
+			pipeIn,
+			buffer,
+			BUFSIZE*sizeof(TCHAR),
+			&bytesRead,
+			NULL) || bytesRead == 0)
 		{
 			if (GetLastError() == ERROR_BROKEN_PIPE)
 			{
-				_tprintf(TEXT("InstanceThread: client disconnected.\n"), GetLastError());
+				cout << "Server disconnected." << endl;
 			}
 			else
 			{
-				_tprintf(TEXT("InstanceThread ReadFile failed, GLE=%d.\n"), GetLastError());
+				ErrorExit(TEXT("ReadFile"));
 			}
 			break;
 		}
 
-		printf("%ls\n", pchRequest);
-
-		cbReplyBytes = (lstrlen(pchRequest) + 1)*sizeof(TCHAR);
-		fSuccess = WriteFile(
-			hPipe,        // handle to pipe 
-			pchRequest,     // buffer to write from 
-			cbReplyBytes, // number of bytes to write 
-			&cbWritten,   // number of bytes written 
-			NULL);        // not overlapped I/O 
-
-		if (!fSuccess || cbReplyBytes != cbWritten)
-		{
-			_tprintf(TEXT("InstanceThread WriteFile failed, GLE=%d.\n"), GetLastError());
-			break;
-		}
+		cout << buffer << endl;
 	}
+	CloseHandle(pipeIn);
 
-	// Flush the pipe to allow the client to read the pipe's contents 
-	// before disconnecting. Then disconnect the pipe, and close the 
-	// handle to this pipe instance. 
-
-	FlushFileBuffers(hPipe);
-	DisconnectNamedPipe(hPipe);
-	CloseHandle(hPipe);
-
-	HeapFree(hHeap, 0, pchRequest);
-
-	printf("InstanceThread exitting.\n");
-	return 1;
+	return 0;
 }
 
-
-int main(void)
+void StartClient()
 {
-	HANDLE hPipe = INVALID_HANDLE_VALUE, hThread = NULL;
-	LPTSTR lpszPipename = TEXT("\\\\.\\pipe\\chat");
-	
-	hPipe = CreateFile(
-		lpszPipename,   // pipe name 
+	HANDLE hThread[2];
+
+	LPTSTR pipeOutName = TEXT("\\\\.\\pipe\\chatOut");
+	LPTSTR pipeInName = TEXT("\\\\.\\pipe\\chatIn");
+
+	HANDLE pipeOut = CreateFile(
+		pipeOutName,   // pipe name 
 		GENERIC_READ |  // read and write access 
 		GENERIC_WRITE,
 		0,              // no sharing 
@@ -195,79 +271,76 @@ int main(void)
 		0,              // default attributes 
 		NULL);          // no template file 
 
-	if (hPipe == INVALID_HANDLE_VALUE)
+	if (pipeOut == INVALID_HANDLE_VALUE)
 	{
-		//ErrorExit(TEXT("CreateFile"));
+		ErrorExit(TEXT("CreateFile"));
 	}
 
-	if (hPipe != INVALID_HANDLE_VALUE)
+	hThread[0] = CreateThread(
+		NULL,
+		0,
+		ClientSpeaker,
+		(LPVOID)pipeOut,
+		0,
+		NULL
+		);
+
+	if (hThread[0] == NULL)
 	{
-		for (;;)
-		{
-			if (!WriteClientMessage(GetClientMessage(), hPipe))
-			{
-				ErrorExit(TEXT("WriteClientMessage"));
-			}
-			ReadClientMessage(hPipe);
-		}
-		CloseHandle(hPipe);
+		ErrorExit(TEXT("CreateThread"));
+	}
+
+	HANDLE pipeIn = CreateFile(
+		pipeInName,
+		GENERIC_READ,
+		0,
+		NULL,
+		OPEN_EXISTING,
+		0,
+		NULL
+		);
+
+	if (pipeIn == INVALID_HANDLE_VALUE)
+	{
+		ErrorExit(TEXT("CreateFile"));
+	}
+
+	hThread[1] = CreateThread(NULL, 0, ClientListener, (LPVOID)pipeIn, 0, NULL);
+
+	if (hThread[1] == NULL)
+	{
+		ErrorExit(TEXT("CreateThread"));
+	}
+
+	WaitForMultipleObjects(2, hThread, FALSE, INFINITE);
+
+	for (int i = 0; i < 2; ++i)
+	{
+		CloseHandle(hThread[i]);
+	}
+
+	CloseHandle(pipeOut);
+	CloseHandle(pipeIn);
+
+	return;
+}
+
+int main()
+{
+	srand(time(NULL));
+
+	LPCTSTR mutexName = TEXT("Chat");
+	HANDLE handleMutex = OpenMutex(MUTEX_ALL_ACCESS, FALSE, mutexName);
+	if (handleMutex)
+	{
+		StartClient();
+		return 0;
 	}
 	else
 	{
-		BOOL   fConnected = FALSE;
-		DWORD  dwThreadId = 0;
-		cout << "Server started successfully." << endl;
-		for (;;)
-		{
-			cout << "Waiting for connection." << endl;
-			hPipe = CreateNamedPipe(
-				lpszPipename,
-				PIPE_ACCESS_DUPLEX,
-				PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
-				PIPE_UNLIMITED_INSTANCES,
-				BUFSIZE,
-				BUFSIZE,
-				0,      
-				NULL
-			);
-
-			if (hPipe == INVALID_HANDLE_VALUE)
-			{
-				ErrorExit(TEXT("CreateNamedPipe"));
-				return -1;
-			}
-
-			fConnected = ConnectNamedPipe(hPipe, NULL) 
-				? TRUE 
-				: (GetLastError() == ERROR_PIPE_CONNECTED);
-
-			if (fConnected)
-			{
-				printf("Client connected, creating a processing thread.\n");
-
-				// Create a thread for this client. 
-				hThread = CreateThread(
-					NULL,              // no security attribute 
-					0,                 // default stack size 
-					ClientConnection,    // thread proc
-					(LPVOID)hPipe,    // thread parameter 
-					0,                 // not suspended 
-					&dwThreadId);      // returns thread ID 
-
-				if (hThread == NULL)
-				{
-					ErrorExit(TEXT("CreateThread"));
-					return -1;
-				}
-				else CloseHandle(hThread);
-			}
-			else
-				// The client could not connect, so close the pipe. 
-				CloseHandle(hPipe);
-
-		}
-		
+		handleMutex = CreateMutex(NULL, FALSE, mutexName);
+		StartServer();
 	}
 
-	return (0);
+	return 0;
 }
