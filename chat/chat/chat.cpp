@@ -4,6 +4,8 @@
 #include "stdafx.h"
 
 #define BUFSIZE 512
+#define PIPE_IN TEXT("\\\\.\\pipe\\chatIn")
+#define PIPE_OUT TEXT("\\\\.\\pipe\\chatOut")
 
 using namespace std;
 
@@ -67,7 +69,8 @@ DWORD WINAPI ServerThread(LPVOID hPipe)
 		{
 			if (GetLastError() != ERROR_BROKEN_PIPE)
 			{
-				ErrorExit(TEXT("ReadFile"));
+				cout << "Server ReadFile error." << endl;
+				return 1;
 			}
 			break;
 		}
@@ -80,7 +83,8 @@ DWORD WINAPI ServerThread(LPVOID hPipe)
 		}
 		else
 		{
-			cout << buffer << endl;
+			string message = (char*)buffer;
+			cout << message << endl;
 			for (auto pipe : clientList)
 			{
 				if (pipe.first != hPipe)
@@ -88,14 +92,15 @@ DWORD WINAPI ServerThread(LPVOID hPipe)
 					DWORD bytesWritten = 0;
 					if (!WriteFile(
 						pipe.second.pipe,
-						buffer,
-						BUFSIZE*sizeof(TCHAR) + 1,
+						message.c_str(),
+						message.size() + 1,
 						&bytesWritten,
 						NULL
 						)
-						|| BUFSIZE*sizeof(TCHAR) + 1 != bytesWritten)
+						|| message.size() + 1 != bytesWritten)
 					{
-						ErrorExit(TEXT("WriteFile"));
+						cout << "Server WriteFile error." << endl;
+						return 1;
 					}
 				}
 			}
@@ -114,14 +119,11 @@ DWORD WINAPI ServerThread(LPVOID hPipe)
 
 void StartServer()
 {
-	LPTSTR pipeOutName = TEXT("\\\\.\\pipe\\chatOut");
-	LPTSTR pipeInName = TEXT("\\\\.\\pipe\\chatIn");
-
 	cout << "Server successfully started." << endl;
 	for (;;)
 	{
 		HANDLE pipeIn = CreateNamedPipe(
-			pipeInName,
+			PIPE_IN,
 			PIPE_ACCESS_INBOUND,
 			PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
 			PIPE_UNLIMITED_INSTANCES,
@@ -132,7 +134,7 @@ void StartServer()
 			);
 
 		HANDLE pipeOut = CreateNamedPipe(
-			pipeOutName,
+			PIPE_OUT,
 			PIPE_ACCESS_OUTBOUND,
 			PIPE_TYPE_MESSAGE | PIPE_WAIT,
 			PIPE_UNLIMITED_INSTANCES,
@@ -194,7 +196,7 @@ DWORD WINAPI ClientSpeaker(LPVOID hPipe)
 		NULL
 		) || bytesRead != bytesWritten)
 	{
-		ErrorExit(TEXT("WriteFile"));
+		cout << "Client WriteFile error." << endl;
 		CloseHandle(pipeOut);
 		return 1;
 	}
@@ -211,7 +213,7 @@ DWORD WINAPI ClientSpeaker(LPVOID hPipe)
 			NULL
 			) || bytesRead != bytesWritten)
 		{
-			ErrorExit(TEXT("WriteFile"));
+			cout << "Client WriteFile error." << endl;
 			break;
 		}
 	}
@@ -232,7 +234,7 @@ DWORD WINAPI ClientListener(LPVOID hPipe)
 		if (!ReadFile(
 			pipeIn,
 			buffer,
-			BUFSIZE*sizeof(TCHAR),
+			BUFSIZE,
 			&bytesRead,
 			NULL) || bytesRead == 0)
 		{
@@ -242,28 +244,24 @@ DWORD WINAPI ClientListener(LPVOID hPipe)
 			}
 			else
 			{
-				ErrorExit(TEXT("ReadFile"));
+				cout << "ReadFile error." << endl;
 			}
 			break;
 		}
 
-		cout << buffer << endl;
+		cout << (char*)buffer << endl;
 	}
 	CloseHandle(pipeIn);
 
 	return 0;
 }
 
-void StartClient()
+bool StartClient()
 {
 	HANDLE hThread[2];
 
-	LPTSTR pipeOutName = TEXT("\\\\.\\pipe\\chatOut");
-	LPTSTR pipeInName = TEXT("\\\\.\\pipe\\chatIn");
-
 	HANDLE pipeOut = CreateFile(
-		pipeOutName,   // pipe name 
-		GENERIC_READ |  // read and write access 
+		PIPE_IN,   // pipe name 
 		GENERIC_WRITE,
 		0,              // no sharing 
 		NULL,           // default security attributes
@@ -273,7 +271,7 @@ void StartClient()
 
 	if (pipeOut == INVALID_HANDLE_VALUE)
 	{
-		ErrorExit(TEXT("CreateFile"));
+		return false;
 	}
 
 	hThread[0] = CreateThread(
@@ -291,7 +289,7 @@ void StartClient()
 	}
 
 	HANDLE pipeIn = CreateFile(
-		pipeInName,
+		PIPE_OUT,
 		GENERIC_READ,
 		0,
 		NULL,
@@ -322,23 +320,15 @@ void StartClient()
 	CloseHandle(pipeOut);
 	CloseHandle(pipeIn);
 
-	return;
+	return true;
 }
 
 int main()
 {
 	srand(time(NULL));
 
-	LPCTSTR mutexName = TEXT("Chat");
-	HANDLE handleMutex = OpenMutex(MUTEX_ALL_ACCESS, FALSE, mutexName);
-	if (handleMutex)
+	if (!StartClient())
 	{
-		StartClient();
-		return 0;
-	}
-	else
-	{
-		handleMutex = CreateMutex(NULL, FALSE, mutexName);
 		StartServer();
 	}
 
